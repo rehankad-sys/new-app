@@ -1,71 +1,24 @@
-name: Build SK Traders Android APK
+name: Build Standalone APK
 
 on:
-  push:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Standalone APK
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Build with Buildozer (Docker)
+        uses: ArtemSBulgakov/buildozer-action@v1
+        id: buildozer
         with:
-          python-version: "3.11"
-          cache: "pip"
+          command: buildozer android debug
+          workdir: .
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: "temurin"
-          java-version: "17"
-
-      - name: Set up Flutter SDK
-        uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          cache: true
-
-      - name: Verify Flutter & Android Environment
-        run: |
-          flutter --version
-          java -version
-
-      - name: Install Python & Flet Build Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install flet requests urllib3
-
-      - name: Compile Standalone Android APK (.apk)
-        run: |
-          cd SK_Traders_Android_App
-          flet build apk --project "SK Traders Accounting" --description "SK Traders Mobile Khata" --org "com.sktraders.accounting" --verbose
-
-      - name: Locate and Prepare Output APK
-        if: always()
-        run: |
-          mkdir -p output_apk
-          echo "=== SEARCHING FOR GENERATED APK FILES ==="
-          find . -name "*.apk" -type f
-          echo "========================================="
-          # Copy any generated APK to output_apk/SK_Traders_Accounting.apk
-          find . -name "*.apk" -type f -exec cp -v {} output_apk/SK_Traders_Accounting.apk \; || true
-          ls -la output_apk/
-
-      - name: Upload APK Artifact (Direct Download)
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SK_Traders_Accounting.apk
-          path: |
-            output_apk/*.apk
-            SK_Traders_Android_App/build/apk/*.apk
-            build/apk/*.apk
-            **/*.apk
-          if-no-files-found: warn
-          retention-days: 30
+          name: SK_Traders_Accounting_APK
+          path: bin/*.apk
