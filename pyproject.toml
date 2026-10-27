@@ -1,0 +1,29 @@
+[project]
+name = "sk_traders_accounting"
+version = "1.0.0"
+description = "SK Traders Mobile Khata"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "flet",
+    "requests",
+    "urllib3"
+]
+
+[tool.flet]
+org = "com.sktraders.accounting"
+product = "SK Traders Accounting"
+company = "SK Traders"
+copyright = "Copyright (c) 2026 SK Traders"
+
+[tool.flet.app]
+path = "."
+
+[tool.flet.android]
+package = "com.sktraders.accounting"
+permissions = [
+    "android.permission.INTERNET",
+    "android.permission.RECORD_AUDIO",
+    "android.permission.READ_EXTERNAL_STORAGE",
+    "android.permission.WRITE_EXTERNAL_STORAGE"
+]
