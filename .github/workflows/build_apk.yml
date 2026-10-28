@@ -51,28 +51,4 @@ jobs:
           
           if [ -d "assets" ]; then
             mkdir -p sk_apk/www/assets
-            cp -r assets/* sk_apk/www/assets/
-          elif [ -d "SK_Traders_Android_App/assets" ]; then
-            mkdir -p sk_apk/www/assets
-            cp -r SK_Traders_Android_App/assets/* sk_apk/www/assets/
-          fi
-
-          cd sk_apk
-          
-          # Allow phone call (tel:) links and audio permissions in config.xml
-          sed -i 's|</widget>|  <allow-intent href="tel:*" />\n  <access origin="*" />\n</widget>|g' config.xml
-          
-          cordova platform add android@13.0.0
-          
-          # Inject Microphone & Audio Permissions into AndroidManifest.xml
-          MANIFEST="platforms/android/app/src/main/AndroidManifest.xml"
-          sed -i 's|<application|<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.CALL_PHONE" />\n    <application|g' "$MANIFEST"
-          
-          cordova build android --debug
-          cp platforms/android/app/build/outputs/apk/debug/app-debug.apk ../SK_Traders_Accounting.apk
-
-      - name: Upload Ready APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: SK_Traders_Accounting_APK
-          path: SK_Traders_Accounting.apk
+            cp -r assets/* sk_apk/www/assets
