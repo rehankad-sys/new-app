@@ -51,4 +51,65 @@ jobs:
           
           if [ -d "assets" ]; then
             mkdir -p sk_apk/www/assets
-            cp -r assets/* sk_apk/www/assets
+            cp -r assets/* sk_apk/www/assets/
+          elif [ -d "SK_Traders_Android_App/assets" ]; then
+            mkdir -p sk_apk/www/assets
+            cp -r SK_Traders_Android_App/assets/* sk_apk/www/assets/
+          fi
+
+          cd sk_apk
+          
+          # Allow phone call (tel:), internet & cleartext traffic in config.xml
+          sed -i 's|</widget>|  <allow-intent href="tel:*" />\n  <allow-navigation href="*" />\n  <access origin="*" />\n</widget>|g' config.xml
+          
+          cordova platform add android@13.0.0
+          
+          # 1. Inject Microphone, Internet & Cleartext Permissions into AndroidManifest.xml
+          MANIFEST="platforms/android/app/src/main/AndroidManifest.xml"
+          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.CALL_PHONE" />\n    <application android:usesCleartextTraffic="true"|g' "$MANIFEST"
+
+          # 2. Request Runtime Mic Permission on App Launch in MainActivity.java
+          MAIN_ACT="platforms/android/app/src/main/java/org/sktraders/accounting/MainActivity.java"
+          cat << 'EOF' > "$MAIN_ACT"
+          package org.sktraders.accounting;
+
+          import android.Manifest;
+          import android.content.pm.PackageManager;
+          import android.os.Build;
+          import android.os.Bundle;
+          import androidx.core.app.ActivityCompat;
+          import androidx.core.content.ContextCompat;
+          import org.apache.cordova.*;
+
+          public class MainActivity extends CordovaActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  Bundle extras = getIntent().getExtras();
+                  if (extras != null && extras.getBoolean("cdvStartInBackground", false)) {
+                      moveTaskToBack(true);
+                  }
+                  loadUrl(launchUrl);
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                      if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                          ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.RECORD_AUDIO}, 101);
+                      }
+                  }
+              }
+          }
+          EOF
+
+          # 3. Auto-Grant WebView Audio Recording (getUserMedia) in SystemWebChromeClient.java
+          CHROME_CLIENT="platforms/android/CordovaLib/src/org/apache/cordova/engine/SystemWebChromeClient.java"
+          if [ -f "$CHROME_CLIENT" ]; then
+            sed -i 's|public void onPermissionRequest(final PermissionRequest request) {|public void onPermissionRequest(final PermissionRequest request) {\n        request.grant(request.getResources());\n        if (true) return;|g' "$CHROME_CLIENT"
+          fi
+          
+          cordova build android --debug
+          cp platforms/android/app/build/outputs/apk/debug/app-debug.apk ../SK_Traders_Accounting.apk
+
+      - name: Upload Ready APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SK_Traders_Accounting_APK
+          path: SK_Traders_Accounting.apk
