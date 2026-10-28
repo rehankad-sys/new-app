@@ -1,49 +1,8 @@
-name: Build Standalone APK
-
-on:
-  workflow_dispatch:
-  push:
-    branches: [ main, master ]
-
-jobs:
-  build:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Set up Java JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Configure Pre-installed Android SDK & Gradle
-        run: |
-          export ANDROID_HOME=/usr/local/lib/android/sdk
-          export ANDROID_SDK_ROOT=/usr/local/lib/android/sdk
-          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
-          echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin:/usr/local/lib/android/sdk/platform-tools" >> $GITHUB_PATH
-          yes | /usr/local/lib/android/sdk/cmdline-tools/*/bin/sdkmanager --licenses || true
-          /usr/local/lib/android/sdk/cmdline-tools/*/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-
-      - name: Install Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
-
-      - name: Set up Node.js (For Cordova Standalone APK)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Build Offline Android APK
+- name: Build Offline Android APK
         run: |
           npm install -g cordova
           cordova create sk_apk org.sktraders.accounting "SK Traders Accounting"
           
-          # Copy your pre-built offline mobile app (www folder & database)
           if [ -d "www" ]; then
             cp -r www/* sk_apk/www/
           elif [ -d "SK_Traders_Android_App/www" ]; then
@@ -59,12 +18,15 @@ jobs:
           fi
 
           cd sk_apk
+          
+          # Allow phone call (tel:) links and audio permissions in config.xml
+          sed -i 's|</widget>|  <allow-intent href="tel:*" />\n  <access origin="*" />\n</widget>|g' config.xml
+          
           cordova platform add android@13.0.0
+          
+          # Inject Microphone & Audio Permissions into AndroidManifest.xml
+          MANIFEST="platforms/android/app/src/main/AndroidManifest.xml"
+          sed -i 's|<application|<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.CALL_PHONE" />\n    <application|g' "$MANIFEST"
+          
           cordova build android --debug
           cp platforms/android/app/build/outputs/apk/debug/app-debug.apk ../SK_Traders_Accounting.apk
-
-      - name: Upload Ready APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: SK_Traders_Accounting_APK
-          path: SK_Traders_Accounting.apk
