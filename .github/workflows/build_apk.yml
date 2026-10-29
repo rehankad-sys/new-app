@@ -64,9 +64,9 @@ jobs:
           
           cordova platform add android@13.0.0
           
-          # 1. Inject Microphone, Internet & Cleartext Permissions into AndroidManifest.xml
+          # 1. Inject Microphone, Call & Cleartext Permissions into AndroidManifest.xml
           MANIFEST="platforms/android/app/src/main/AndroidManifest.xml"
-          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.CALL_PHONE" />\n    <application android:usesCleartextTraffic="true"|g' "$MANIFEST"
+          sed -i 's|<application|<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.CALL_PHONE" />\n    <application android:usesCleartextTraffic="true"|g' "$MANIFEST"
 
           # 2. Inject Native Android Google Speech Recognizer Bridge into MainActivity.java
           MAIN_ACT="platforms/android/app/src/main/java/org/sktraders/accounting/MainActivity.java"
@@ -121,7 +121,7 @@ jobs:
                       }, "AndroidNativeVoice");
                   } catch (Exception ignored) {}
 
-                  if (Build.VERSION_SDK_INT >= Build.VERSION_CODES.M) {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                       if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                           ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.RECORD_AUDIO}, 101);
                       }
