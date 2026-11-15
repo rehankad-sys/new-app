@@ -67,7 +67,7 @@ jobs:
 
           cd super_apk
           
-          sed -i 's|</widget>|  <allow-intent href="tel:*" />\n  <allow-navigation href="*" />\n  <access origin="*" />\n</widget>|g' config.xml
+          sed -i 's|</widget>|  <allow-intent href="tel:*" />\n  <allow-intent href="whatsapp:*" />\n  <allow-intent href="sms:*" />\n  <allow-navigation href="*" />\n  <access origin="*" />\n</widget>|g' config.xml
           
           cordova platform add android@13.0.0
 
@@ -93,9 +93,9 @@ jobs:
           fi
           
           MANIFEST="platforms/android/app/src/main/AndroidManifest.xml"
-          sed -i 's|<application|<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.CALL_PHONE" />\n    <queries>\n        <intent>\n            <action android:name="android.speech.RecognitionService" />\n        </intent>\n    </queries>\n    <application android:usesCleartextTraffic="true"|g' "$MANIFEST"
+          sed -i 's|<application|<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.CALL_PHONE" />\n    <queries>\n        <package android:name="com.whatsapp" />\n        <package android:name="com.whatsapp.w4b" />\n        <intent>\n            <action android:name="android.intent.action.VIEW" />\n            <data android:scheme="whatsapp" />\n        </intent>\n    </queries>\n    <application android:usesCleartextTraffic="true"|g' "$MANIFEST"
 
-          # Inject Background Continuous Manual Start/Stop SpeechRecognizer + OAuth Interceptor into MainActivity.java
+          # Inject Gapless MediaRecorder Audio Bridge + Direct WhatsApp App Launcher + OAuth Interceptor
           MAIN_ACT="platforms/android/app/src/main/java/com/superaccounting/app/MainActivity.java"
           cat << 'EOF' > "$MAIN_ACT"
           package com.superaccounting.app;
@@ -104,14 +104,11 @@ jobs:
           import android.content.Intent;
           import android.content.pm.PackageManager;
           import android.graphics.Bitmap;
+          import android.media.MediaRecorder;
           import android.net.Uri;
           import android.os.Build;
           import android.os.Bundle;
-          import android.os.Handler;
-          import android.os.Looper;
-          import android.speech.RecognitionListener;
-          import android.speech.RecognizerIntent;
-          import android.speech.SpeechRecognizer;
+          import android.util.Base64;
           import android.webkit.CookieManager;
           import android.webkit.JavascriptInterface;
           import android.webkit.WebResourceError;
@@ -120,7 +117,9 @@ jobs:
           import android.webkit.WebView;
           import androidx.core.app.ActivityCompat;
           import androidx.core.content.ContextCompat;
-          import java.util.ArrayList;
+          import java.io.ByteArrayOutputStream;
+          import java.io.File;
+          import java.io.FileInputStream;
           import org.apache.cordova.*;
           import org.apache.cordova.engine.SystemWebViewEngine;
           import org.apache.cordova.engine.SystemWebViewClient;
@@ -128,85 +127,63 @@ jobs:
 
           public class MainActivity extends CordovaActivity {
               private boolean isHandlingOAuth = false;
-              private SpeechRecognizer speechRecognizer;
-              private Intent recognizerIntent;
-              private boolean keepListening = false;
-              private StringBuilder fullTranscript = new StringBuilder();
-              private final Handler mainHandler = new Handler(Looper.getMainLooper());
+              private MediaRecorder mediaRecorder = null;
+              private File audioFile = null;
+              private boolean isRecordingAudio = false;
 
-              private void sendTextToWeb(String text, boolean isFinalStop) {
+              private void launchNativeWhatsApp(String phone, String text) {
                   try {
-                      final WebView wv = (WebView) appView.getEngine().getView();
-                      final String safeText = JSONObject.quote(text.trim());
-                      wv.post(() -> {
-                          String js = "try{" +
-                              "var box = document.querySelector('textarea') || document.getElementById('voiceTranscript') || document.getElementById('voice-input');" +
-                              "if(box){ box.value = " + safeText + "; box.dispatchEvent(new Event('input', {bubbles:true})); }" +
-                              "if(window.onAndroidLiveVoice){ window.onAndroidLiveVoice(" + safeText + ", " + isFinalStop + "); }" +
-                              (isFinalStop ? "else if(window.onAndroidVoiceResult){ window.onAndroidVoiceResult(" + safeText + "); }" : "") +
-                              "}catch(e){}";
-                          wv.evaluateJavascript(js, null);
-                      });
-                  } catch (Exception ignored) {}
+                      String cleanPhone = phone != null ? phone.replaceAll("[^0-9]", "") : "";
+                      if (cleanPhone.length() == 10) cleanPhone = "91" + cleanPhone;
+                      String uriStr = "whatsapp://send?" + (!cleanPhone.isEmpty() ? "phone=" + cleanPhone : "") +
+                                      (text != null && !text.isEmpty() ? "&text=" + Uri.encode(text) : "");
+                      Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(uriStr));
+                      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      startActivity(intent);
+                  } catch (Exception e) {
+                      try {
+                          Intent webIntent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + phone));
+                          webIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                          startActivity(webIntent);
+                      } catch (Exception ignored) {}
+                  }
               }
 
-              private void startInternalListening() {
-                  if (!keepListening) return;
-                  try {
-                      if (speechRecognizer == null) {
-                          speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
-                          speechRecognizer.setRecognitionListener(new RecognitionListener() {
-                              @Override public void onReadyForSpeech(Bundle params) {}
-                              @Override public void onBeginningOfSpeech() {}
-                              @Override public void onRmsChanged(float rmsdB) {}
-                              @Override public void onBufferReceived(byte[] buffer) {}
-                              @Override public void onEndOfSpeech() {}
-                              @Override public void onEvent(int eventType, Bundle params) {}
+              private boolean interceptExternalAndOAuthUrls(final WebView view, String url) {
+                  if (url == null) return false;
 
-                              @Override
-                              public void onPartialResults(Bundle partialResults) {
-                                  if (!keepListening) return;
-                                  ArrayList<String> matches = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                                  if (matches != null && !matches.isEmpty()) {
-                                      String current = (fullTranscript.toString() + " " + matches.get(0)).trim();
-                                      sendTextToWeb(current, false);
-                                  }
+                  // 1. Direct Native WhatsApp App Opening
+                  if (url.startsWith("whatsapp://") || url.contains("wa.me/") || url.contains("api.whatsapp.com/send")) {
+                      try {
+                          if (url.startsWith("whatsapp://")) {
+                              Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                              intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                              startActivity(intent);
+                          } else {
+                              Uri uri = Uri.parse(url);
+                              String phone = uri.getQueryParameter("phone");
+                              if (phone == null && url.contains("wa.me/")) {
+                                  phone = uri.getLastPathSegment();
                               }
+                              String text = uri.getQueryParameter("text");
+                              launchNativeWhatsApp(phone, text);
+                          }
+                      } catch (Exception ignored) {}
+                      return true;
+                  }
 
-                              @Override
-                              public void onResults(Bundle results) {
-                                  ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                                  if (matches != null && !matches.isEmpty() && !matches.get(0).trim().isEmpty()) {
-                                      if (fullTranscript.length() > 0) fullTranscript.append(" ");
-                                      fullTranscript.append(matches.get(0).trim());
-                                      sendTextToWeb(fullTranscript.toString(), false);
-                                  }
-                                  if (keepListening) {
-                                      mainHandler.postDelayed(() -> startInternalListening(), 150);
-                                  }
-                              }
+                  // 2. Direct Phone Dialer Opening
+                  if (url.startsWith("tel:")) {
+                      try {
+                          Intent intent = new Intent(Intent.ACTION_DIAL, Uri.parse(url));
+                          intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                          startActivity(intent);
+                      } catch (Exception ignored) {}
+                      return true;
+                  }
 
-                              @Override
-                              public void onError(int error) {
-                                  if (keepListening) {
-                                      mainHandler.postDelayed(() -> startInternalListening(), 250);
-                                  }
-                              }
-                          });
-                      }
-                      if (recognizerIntent == null) {
-                          recognizerIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-                          recognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-                          recognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN");
-                          recognizerIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-                          recognizerIntent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
-                      }
-                      speechRecognizer.startListening(recognizerIntent);
-                  } catch (Exception ignored) {}
-              }
-
-              private boolean interceptLocalhostOAuth(final WebView view, String url) {
-                  if (url != null && (url.startsWith("http://localhost") || url.startsWith("http://127.0.0.1"))) {
+                  // 3. OAuth Localhost Redirect Interceptor
+                  if (url.startsWith("http://localhost") || url.startsWith("http://127.0.0.1")) {
                       if (isHandlingOAuth) return true;
                       isHandlingOAuth = true;
                       try { view.stopLoading(); } catch (Exception ignored) {}
@@ -233,6 +210,68 @@ jobs:
                   return false;
               }
 
+              private void startGaplessRecording() {
+                  try {
+                      stopGaplessRecording(false);
+                      audioFile = new File(getCacheDir(), "super_voice_cmd.m4a");
+                      if (audioFile.exists()) audioFile.delete();
+
+                      mediaRecorder = new MediaRecorder();
+                      mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+                      mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+                      mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+                      mediaRecorder.setAudioSamplingRate(16000);
+                      mediaRecorder.setAudioEncodingBitRate(64000);
+                      mediaRecorder.setOutputFile(audioFile.getAbsolutePath());
+                      mediaRecorder.prepare();
+                      mediaRecorder.start();
+                      isRecordingAudio = true;
+
+                      final WebView wv = (WebView) appView.getEngine().getView();
+                      wv.post(() -> wv.evaluateJavascript(
+                          "try{ var box = document.querySelector('textarea') || document.getElementById('voiceTranscript');" +
+                          "if(box){ box.placeholder = '🔴 रिकॉर्डिंग चालू है... पूरा वाक्य आराम से बोलें, फिर Stop दबाएं'; } }catch(e){}", null));
+                  } catch (Exception e) {
+                      isRecordingAudio = false;
+                  }
+              }
+
+              private void stopGaplessRecording(boolean sendToGemini) {
+                  if (!isRecordingAudio && mediaRecorder == null) return;
+                  isRecordingAudio = false;
+                  try {
+                      if (mediaRecorder != null) {
+                          mediaRecorder.stop();
+                      }
+                  } catch (Exception ignored) {}
+                  try {
+                      if (mediaRecorder != null) {
+                          mediaRecorder.release();
+                      }
+                  } catch (Exception ignored) {}
+                  mediaRecorder = null;
+
+                  if (sendToGemini && audioFile != null && audioFile.exists() && audioFile.length() > 100) {
+                      try {
+                          FileInputStream fis = new FileInputStream(audioFile);
+                          ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                          byte[] buf = new byte[4096];
+                          int read;
+                          while ((read = fis.read(buf)) != -1) {
+                              bos.write(buf, 0, read);
+                          }
+                          fis.close();
+                          final String base64Audio = Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP);
+                          final WebView wv = (WebView) appView.getEngine().getView();
+                          wv.post(() -> {
+                              String safeB64 = JSONObject.quote(base64Audio);
+                              wv.evaluateJavascript(
+                                  "if(window.onAndroidAudioRecorded){window.onAndroidAudioRecorded(" + safeB64 + ", 'audio/mp4');}", null);
+                          });
+                      } catch (Exception ignored) {}
+                  }
+              }
+
               @Override
               public void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
@@ -256,31 +295,31 @@ jobs:
                       wv.setWebViewClient(new SystemWebViewClient(engine) {
                           @Override
                           public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                              if (interceptLocalhostOAuth(view, request.getUrl().toString())) return true;
+                              if (interceptExternalAndOAuthUrls(view, request.getUrl().toString())) return true;
                               return super.shouldOverrideUrlLoading(view, request);
                           }
 
                           @Override
                           public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                              if (interceptLocalhostOAuth(view, url)) return true;
+                              if (interceptExternalAndOAuthUrls(view, url)) return true;
                               return super.shouldOverrideUrlLoading(view, url);
                           }
 
                           @Override
                           public void onPageStarted(WebView view, String url, Bitmap favicon) {
-                              if (interceptLocalhostOAuth(view, url)) return;
+                              if (interceptExternalAndOAuthUrls(view, url)) return;
                               super.onPageStarted(view, url, favicon);
                           }
 
                           @Override
                           public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-                              if (interceptLocalhostOAuth(view, failingUrl)) return;
+                              if (interceptExternalAndOAuthUrls(view, failingUrl)) return;
                               super.onReceivedError(view, errorCode, description, failingUrl);
                           }
 
                           @Override
                           public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                              if (request != null && request.getUrl() != null && interceptLocalhostOAuth(view, request.getUrl().toString())) return;
+                              if (request != null && request.getUrl() != null && interceptExternalAndOAuthUrls(view, request.getUrl().toString())) return;
                               super.onReceivedError(view, request, error);
                           }
                       });
@@ -288,47 +327,34 @@ jobs:
                       wv.addJavascriptInterface(new Object() {
                           @JavascriptInterface
                           public void startVoice() {
-                              startContinuousVoice();
+                              runOnUiThread(() -> startGaplessRecording());
                           }
 
                           @JavascriptInterface
                           public void startContinuousVoice() {
-                              runOnUiThread(() -> {
-                                  fullTranscript.setLength(0);
-                                  keepListening = true;
-                                  startInternalListening();
-                              });
+                              runOnUiThread(() -> startGaplessRecording());
+                          }
+
+                          @JavascriptInterface
+                          public void startAudioRecord() {
+                              runOnUiThread(() -> startGaplessRecording());
                           }
 
                           @JavascriptInterface
                           public void stopVoice() {
-                              runOnUiThread(() -> {
-                                  keepListening = false;
-                                  try {
-                                      if (speechRecognizer != null) {
-                                          speechRecognizer.stopListening();
-                                          speechRecognizer.cancel();
-                                      }
-                                  } catch (Exception ignored) {}
-                                  if (fullTranscript.length() > 0) {
-                                      sendTextToWeb(fullTranscript.toString(), true);
-                                  }
-                              });
+                              runOnUiThread(() -> stopGaplessRecording(true));
+                          }
+
+                          @JavascriptInterface
+                          public void stopAudioRecord() {
+                              runOnUiThread(() -> stopGaplessRecording(true));
+                          }
+
+                          @JavascriptInterface
+                          public void openWhatsApp(String phone, String text) {
+                              runOnUiThread(() -> launchNativeWhatsApp(phone, text));
                           }
                       }, "AndroidNativeVoice");
-
-                      // Automatically hook the HTML Start & Stop buttons to control native background mic
-                      wv.postDelayed(() -> {
-                          wv.evaluateJavascript(
-                              "document.addEventListener('click', function(e){" +
-                              "  var btn = e.target.closest('button');" +
-                              "  if(!btn) return;" +
-                              "  var txt = (btn.innerText || '');" +
-                              "  if(txt.indexOf('Stop') !== -1 || txt.indexOf('रोकें') !== -1){" +
-                              "    if(window.AndroidNativeVoice && window.AndroidNativeVoice.stopVoice){ window.AndroidNativeVoice.stopVoice(); }" +
-                              "  }" +
-                              "}, true);", null);
-                      }, 1500);
 
                   } catch (Exception ignored) {}
 
@@ -341,10 +367,7 @@ jobs:
 
               @Override
               public void onDestroy() {
-                  keepListening = false;
-                  if (speechRecognizer != null) {
-                      try { speechRecognizer.destroy(); } catch (Exception ignored) {}
-                  }
+                  stopGaplessRecording(false);
                   super.onDestroy();
               }
           }
